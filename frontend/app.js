@@ -105,6 +105,18 @@ function showContactForm(prefill = {}) {
   document.querySelector("#name").focus();
 }
 
+function parseToolCall(toolCall) {
+  const name = toolCall.name || toolCall.function?.name;
+  const raw = toolCall.parameters ?? toolCall.arguments ?? toolCall.function?.arguments ?? {};
+  if (typeof raw !== "string") return { name, parameters: raw || {} };
+  try {
+    return { name, parameters: JSON.parse(raw || "{}") };
+  } catch (error) {
+    console.error("Unable to parse client tool arguments", error, raw);
+    return { name, parameters: {} };
+  }
+}
+
 async function initialize() {
   const config = await api("/api/config");
   if (!config.vapiPublicKey || !config.vapiAssistantId) {
@@ -146,8 +158,12 @@ async function initialize() {
     }
     if (message.type !== "tool-calls") return;
     const calls = message.toolCallList || [];
-    const request = calls.find((item) => item.name === "showContactForm");
-    if (request) showContactForm(request.parameters || {});
+    const request = calls.map(parseToolCall).find((item) => item.name === "showContactForm");
+    if (request) {
+      showContactForm(request.parameters);
+      status.textContent = "Waiting for secure form";
+      hint.textContent = "The voice call is still connected. Submit the form to continue.";
+    }
   });
 }
 
@@ -208,9 +224,13 @@ form.addEventListener("submit", async (event) => {
     modal.hidden = true;
     toast.hidden = false;
     setTimeout(() => { toast.hidden = true; }, 3500);
-    vapi.addMessage({
-      role: "system",
-      content: `The user submitted the secure contact form. The verified contact is now stored under session_id ${sessionId}. Do not ask them to spell it or repeat it. Tell them the form was received and continue with appointment selection.`,
+    vapi.send({
+      type: "add-message",
+      message: {
+        role: "system",
+        content: `The user submitted the secure contact form. The verified contact is now stored under session_id ${sessionId}. Do not ask them to spell it, repeat it, or generate contact values for booking. Tell them the form was received and continue with appointment selection.`,
+      },
+      triggerResponseEnabled: true,
     });
   } catch (error) {
     formError.textContent = error.message;
