@@ -1,0 +1,12 @@
+{
+  "private": true,
+  "scripts": {
+    "build:web": "esbuild frontend/app.js --bundle --format=esm --platform=browser --target=es2020 --outfile=backend/static/app.bundle.js"
+  },
+  "dependencies": {
+    "@vapi-ai/web": "2.7.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}
