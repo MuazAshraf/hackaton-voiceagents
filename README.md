@@ -188,5 +188,5 @@ Known reliability design choices:
 Replace this placeholder with the final YouTube link:
 
 ```text
-https://youtube.com/watch?v=REPLACE_WITH_DEMO_LINK
+https://youtu.be/uOgN7AENyn4
 ```
