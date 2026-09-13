@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, TypeAdapter, ValidationError
 from sqlalchemy import select
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
@@ -72,7 +72,9 @@ class BookingRequest(BaseModel):
     start: str = Field(description="Exact slot returned by checkAvailability")
     session_id: str | None = None
     name: str | None = None
-    email: EmailStr | None = None
+    # Voice agents may send an empty placeholder while session_id points to the
+    # verified form data. Validate the final email only after that override.
+    email: str | None = None
     phone: str | None = None
     timezone: str = "Asia/Karachi"
 
@@ -325,6 +327,14 @@ async def book_appointment(body: BookingRequest):
             status_code=422,
             detail="Confirmed name and email, or a session with verified contact, is required",
         )
+
+    try:
+        email = str(TypeAdapter(EmailStr).validate_python(email))
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="A valid confirmed email, or a session with verified contact, is required",
+        ) from exc
 
     client = cal_client()
     try:
