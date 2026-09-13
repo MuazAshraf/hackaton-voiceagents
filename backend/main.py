@@ -21,8 +21,9 @@ load_dotenv(REPO_DIR / ".env")
 
 from cal_client import CalAPIError, CalClient  # noqa: E402
 from database import SessionLocal, create_tables  # noqa: E402
-from gmail_client import GmailAPIError, GmailClient  # noqa: E402
+from gmail_client import GmailClient  # noqa: E402
 from models import AuditEvent, VoiceSession  # noqa: E402
+from sheets_client import SheetsClient  # noqa: E402
 
 
 @asynccontextmanager
@@ -103,6 +104,19 @@ def cal_client() -> CalClient:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+async def append_sheet_audit(**values) -> tuple[str, str | None]:
+    try:
+        sheets = SheetsClient()
+    except RuntimeError:
+        return "not_configured", None
+    try:
+        await sheets.append_audit(**values)
+        return "recorded", None
+    # Audit delivery must never invalidate a completed calendar action.
+    except Exception as exc:
+        return "failed", str(exc)
+
+
 async def run_cal(operation):
     try:
         return await operation
@@ -129,7 +143,12 @@ async def health() -> dict[str, Any]:
     return {
         "status": "healthy",
         "service": "voiceform",
-        "integrations": {"gmail": "configured" if gmail_configured else "missing"},
+        "integrations": {
+            "gmail": "configured" if gmail_configured else "missing",
+            "google_sheets": "configured"
+            if gmail_configured and os.getenv("GOOGLE_SHEET_ID")
+            else "missing",
+        },
     }
 
 
@@ -219,6 +238,7 @@ async def book_appointment(body: BookingRequest):
     email = str(body.email) if body.email else None
     phone = body.phone
     session_record: VoiceSession | None = None
+    contact_source = "voice"
 
     with SessionLocal() as db:
         if body.session_id:
@@ -227,6 +247,7 @@ async def book_appointment(body: BookingRequest):
                 name = session_record.verified_name
                 email = session_record.verified_email
                 phone = session_record.verified_phone
+                contact_source = session_record.contact_source or "form"
                 add_event(db, body.session_id, "verified_contact_used_for_booking")
                 db.commit()
 
@@ -286,7 +307,8 @@ async def book_appointment(body: BookingRequest):
                         {"gmail_message_id": email_result.get("id")},
                     )
                     db.commit()
-        except GmailAPIError as exc:
+        # Confirmation delivery must never invalidate a completed booking.
+        except Exception as exc:
             email_status = "failed"
             if body.session_id:
                 with SessionLocal() as db:
@@ -302,18 +324,63 @@ async def book_appointment(body: BookingRequest):
     if isinstance(result, dict):
         result["voiceform"] = {"gmail_confirmation": email_status}
 
+    sheet_status, sheet_error = await append_sheet_audit(
+        session_id=body.session_id,
+        customer_name=name,
+        email=email,
+        phone=phone,
+        action="appointment_booked",
+        booking_uid=uid,
+        gmail_status=email_status,
+        details={
+            "start": body.start,
+            "timezone": body.timezone,
+            "contact_source": contact_source,
+        },
+    )
+    if body.session_id:
+        with SessionLocal() as db:
+            find_session(db, body.session_id)
+            add_event(
+                db,
+                body.session_id,
+                "google_sheets_audit_recorded"
+                if sheet_status == "recorded"
+                else "google_sheets_audit_failed",
+                {"status": sheet_status, **({"error": sheet_error} if sheet_error else {})},
+            )
+            db.commit()
+    if isinstance(result, dict):
+        result["voiceform"]["google_sheets_audit"] = sheet_status
+
     return result
 
 
 @app.post("/tools/reschedule-appointment")
 async def reschedule_appointment(body: RescheduleRequest):
-    return await run_cal(
+    result = await run_cal(
         cal_client().reschedule_appointment(body.booking_uid, body.new_start, body.reason)
     )
+    sheet_status, _ = await append_sheet_audit(
+        action="appointment_rescheduled",
+        booking_uid=body.booking_uid,
+        details={"new_start": body.new_start, "reason": body.reason},
+    )
+    if isinstance(result, dict):
+        result["voiceform"] = {"google_sheets_audit": sheet_status}
+    return result
 
 
 @app.post("/tools/cancel-appointment")
 async def cancel_appointment(body: CancelRequest):
-    return await run_cal(
+    result = await run_cal(
         cal_client().cancel_appointment(body.booking_uid, body.reason)
     )
+    sheet_status, _ = await append_sheet_audit(
+        action="appointment_cancelled",
+        booking_uid=body.booking_uid,
+        details={"reason": body.reason},
+    )
+    if isinstance(result, dict):
+        result["voiceform"] = {"google_sheets_audit": sheet_status}
+    return result
