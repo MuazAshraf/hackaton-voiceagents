@@ -131,14 +131,16 @@ async def index():
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
-    gmail_configured = all(
-        os.getenv(name)
-        for name in (
-            "GOOGLE_CLIENT_ID",
-            "GOOGLE_CLIENT_SECRET",
-            "GOOGLE_REFRESH_TOKEN",
-            "GMAIL_SENDER_EMAIL",
-        )
+    google_variables = (
+        "GOOGLE_CLIENT_ID",
+        "GOOGLE_CLIENT_SECRET",
+        "GOOGLE_REFRESH_TOKEN",
+        "GMAIL_SENDER_EMAIL",
+        "GOOGLE_SHEET_ID",
+    )
+    missing_variables = [name for name in google_variables if not os.getenv(name)]
+    gmail_configured = not any(
+        name in missing_variables for name in google_variables[:4]
     )
     return {
         "status": "healthy",
@@ -149,6 +151,7 @@ async def health() -> dict[str, Any]:
             if gmail_configured and os.getenv("GOOGLE_SHEET_ID")
             else "missing",
         },
+        "missing_variables": missing_variables,
     }
 
 
