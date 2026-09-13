@@ -38,7 +38,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-STATIC_DIR = PROJECT_DIR / "static"
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
