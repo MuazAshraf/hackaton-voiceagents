@@ -5,7 +5,9 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
+import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -153,6 +155,47 @@ async def health() -> dict[str, Any]:
         },
         "missing_variables": missing_variables,
     }
+
+
+@app.get("/health/google", include_in_schema=False)
+async def google_integration_health() -> dict[str, Any]:
+    try:
+        gmail = GmailClient()
+        sheets = SheetsClient()
+        access_token = await gmail._get_access_token()
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            token_response = await client.get(
+                "https://oauth2.googleapis.com/tokeninfo",
+                params={"access_token": access_token},
+            )
+            sheet_response = await client.get(
+                "https://sheets.googleapis.com/v4/spreadsheets/"
+                f"{quote(str(sheets.spreadsheet_id), safe='')}",
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={"fields": "spreadsheetId"},
+            )
+        token_response.raise_for_status()
+        token_data = token_response.json()
+        scopes = set(str(token_data.get("scope", "")).split())
+        gmail_scope = "https://www.googleapis.com/auth/gmail.send"
+        sheets_scope = "https://www.googleapis.com/auth/spreadsheets"
+        if sheet_response.is_error:
+            try:
+                sheet_error = sheet_response.json().get("error", {}).get("message")
+            except ValueError:
+                sheet_error = None
+            raise RuntimeError(sheet_error or f"Sheets returned HTTP {sheet_response.status_code}")
+        return {
+            "status": "authorized",
+            "gmail_send_scope": gmail_scope in scopes,
+            "sheets_scope": sheets_scope in scopes,
+            "spreadsheet_access": True,
+        }
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "unauthorized", "reason": str(exc)},
+        ) from exc
 
 
 @app.get("/api/config")
