@@ -32,9 +32,7 @@ https://voice.muazashraf.org
 
 Demo video:
 
-```text
-https://youtu.be/uOgN7AENyn4
-```
+[Watch the demo video](https://youtu.be/uOgN7AENyn4)
 
 ## External Apps Used
 
@@ -185,8 +183,4 @@ Known reliability design choices:
 
 ## Demo Video
 
-Replace this placeholder with the final YouTube link:
-
-```text
-https://youtu.be/uOgN7AENyn4
-```
+[Watch the demo video](https://youtu.be/uOgN7AENyn4)
