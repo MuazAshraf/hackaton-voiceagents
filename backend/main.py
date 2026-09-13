@@ -21,6 +21,7 @@ load_dotenv(REPO_DIR / ".env")
 
 from cal_client import CalAPIError, CalClient  # noqa: E402
 from database import SessionLocal, create_tables  # noqa: E402
+from gmail_client import GmailAPIError, GmailClient  # noqa: E402
 from models import AuditEvent, VoiceSession  # noqa: E402
 
 
@@ -236,15 +237,57 @@ async def book_appointment(body: BookingRequest):
                 db.commit()
         raise
 
+    data = result.get("data", {}) if isinstance(result, dict) else {}
+    uid = data.get("uid") if isinstance(data, dict) else None
     if body.session_id:
-        data = result.get("data", {}) if isinstance(result, dict) else {}
-        uid = data.get("uid") if isinstance(data, dict) else None
         with SessionLocal() as db:
             record = find_session(db, body.session_id)
             record.booking_uid = uid
             record.booking_status = "booked"
             add_event(db, body.session_id, "booking_created", {"booking_uid": uid})
             db.commit()
+
+    email_status = "not_configured"
+    try:
+        gmail = GmailClient()
+    except RuntimeError:
+        gmail = None
+
+    if gmail:
+        try:
+            email_result = await gmail.send_booking_confirmation(
+                recipient=email,
+                name=name,
+                start=body.start,
+                timezone=body.timezone,
+                booking_uid=uid,
+            )
+            email_status = "sent"
+            if body.session_id:
+                with SessionLocal() as db:
+                    find_session(db, body.session_id)
+                    add_event(
+                        db,
+                        body.session_id,
+                        "gmail_confirmation_sent",
+                        {"gmail_message_id": email_result.get("id")},
+                    )
+                    db.commit()
+        except GmailAPIError as exc:
+            email_status = "failed"
+            if body.session_id:
+                with SessionLocal() as db:
+                    find_session(db, body.session_id)
+                    add_event(
+                        db,
+                        body.session_id,
+                        "gmail_confirmation_failed",
+                        {"error": str(exc)},
+                    )
+                    db.commit()
+
+    if isinstance(result, dict):
+        result["voiceform"] = {"gmail_confirmation": email_status}
 
     return result
 
