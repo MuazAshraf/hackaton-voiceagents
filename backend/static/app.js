@@ -1,4 +1,7 @@
-import Vapi from "https://cdn.jsdelivr.net/npm/@vapi-ai/web/+esm";
+import VapiPackage from "https://cdn.jsdelivr.net/npm/@vapi-ai/web/+esm";
+
+// jsDelivr wraps this CommonJS package as { default: Vapi }.
+const Vapi = VapiPackage.default || VapiPackage;
 
 const callButton = document.querySelector("#callButton");
 const callLabel = document.querySelector("#callLabel");
