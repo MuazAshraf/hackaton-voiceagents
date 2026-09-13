@@ -116,8 +116,21 @@ async def index():
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "healthy", "service": "voiceform"}
+async def health() -> dict[str, Any]:
+    gmail_configured = all(
+        os.getenv(name)
+        for name in (
+            "GOOGLE_CLIENT_ID",
+            "GOOGLE_CLIENT_SECRET",
+            "GOOGLE_REFRESH_TOKEN",
+            "GMAIL_SENDER_EMAIL",
+        )
+    )
+    return {
+        "status": "healthy",
+        "service": "voiceform",
+        "integrations": {"gmail": "configured" if gmail_configured else "missing"},
+    }
 
 
 @app.get("/api/config")
