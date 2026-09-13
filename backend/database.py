@@ -14,6 +14,10 @@ class Base(DeclarativeBase):
 def _database_url() -> str:
     url = os.getenv("DATABASE_URL", "").strip()
     if url:
+        # Railway supplies the generic PostgreSQL scheme. Select psycopg v3
+        # explicitly so SQLAlchemy doesn't look for the legacy psycopg2 driver.
+        if url.startswith("postgresql://"):
+            url = url.replace("postgresql://", "postgresql+psycopg://", 1)
         return url
     local_db = Path(__file__).resolve().parent / "voiceform.db"
     return f"sqlite:///{local_db.as_posix()}"
