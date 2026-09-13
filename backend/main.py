@@ -217,6 +217,21 @@ async def save_verified_contact(session_id: str, body: VerifiedContact):
 async def get_session(session_id: str):
     with SessionLocal() as db:
         record = find_session(db, session_id)
+        integration_events = db.scalars(
+            select(AuditEvent)
+            .where(
+                AuditEvent.session_id == session_id,
+                AuditEvent.event_type.in_(
+                    (
+                        "gmail_confirmation_sent",
+                        "gmail_confirmation_failed",
+                        "google_sheets_audit_recorded",
+                        "google_sheets_audit_failed",
+                    )
+                ),
+            )
+            .order_by(AuditEvent.created_at)
+        ).all()
         return {
             "session_id": record.session_id,
             "form_submitted": record.form_submitted,
@@ -226,6 +241,14 @@ async def get_session(session_id: str):
             "verified_phone": record.verified_phone,
             "booking_uid": record.booking_uid,
             "booking_status": record.booking_status,
+            "integration_events": [
+                {
+                    "type": event.event_type,
+                    "data": event.event_data,
+                    "created_at": event.created_at.isoformat(),
+                }
+                for event in integration_events
+            ],
         }
 
 
