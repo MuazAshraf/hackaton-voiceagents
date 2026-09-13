@@ -9,13 +9,14 @@ const modal = document.querySelector("#contactModal");
 const form = document.querySelector("#contactForm");
 const formError = document.querySelector("#formError");
 const toast = document.querySelector("#toast");
+const inputDevice = document.querySelector("#inputDevice");
 
 let vapi;
 let assistantId;
 let sessionId;
 let callActive = false;
 let heardLocalAudio = false;
-let audioWarningTimer;
+let callStarting = false;
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -33,7 +34,32 @@ function setCallState(active) {
   orb.classList.toggle("live", active);
   callLabel.textContent = active ? "End voice call" : "Start voice call";
   status.textContent = active ? "Call connected" : "Ready to start";
-  if (!active) clearTimeout(audioWarningTimer);
+}
+
+function errorText(value) {
+  if (!value) return "Unknown error";
+  if (typeof value === "string") return value;
+  if (value.message && typeof value.message === "string") return value.message;
+  if (value.errorMsg) return String(value.errorMsg);
+  if (value.error) return errorText(value.error);
+  if (value.message) return errorText(value.message);
+  try { return JSON.stringify(value); } catch { return String(value); }
+}
+
+function isExpectedMeetingEnd(error) {
+  const detail = errorText(error).toLowerCase();
+  return error?.type === "daily-error" && (detail.includes("meeting has ended") || detail.includes("ejected"));
+}
+
+async function refreshInputDevices(preferredDeviceId = "") {
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const microphones = devices.filter((device) => device.kind === "audioinput");
+  const selected = preferredDeviceId || inputDevice.value;
+  inputDevice.replaceChildren(new Option("System default microphone", ""));
+  microphones.forEach((device, index) => {
+    inputDevice.add(new Option(device.label || `Microphone ${index + 1}`, device.deviceId));
+  });
+  if ([...inputDevice.options].some((option) => option.value === selected)) inputDevice.value = selected;
 }
 
 function describeMediaError(error) {
@@ -50,12 +76,20 @@ async function verifyMicrophone() {
 
   let stream;
   try {
+    const chosenDeviceId = inputDevice.value;
     stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      audio: {
+        ...(chosenDeviceId ? { deviceId: { exact: chosenDeviceId } } : {}),
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
     });
     const track = stream.getAudioTracks()[0];
     if (!track || track.readyState !== "live") throw new DOMException("Microphone track is not live", "NotReadableError");
-    return track.getSettings().label || track.label || "microphone";
+    const deviceId = track.getSettings().deviceId || chosenDeviceId;
+    await refreshInputDevices(deviceId);
+    return { deviceId, label: track.label || "microphone" };
   } catch (error) {
     throw new Error(describeMediaError(error));
   } finally {
@@ -84,12 +118,7 @@ async function initialize() {
   vapi.on("call-start", () => {
     setCallState(true);
     heardLocalAudio = false;
-    hint.textContent = "Speak now — your microphone level is being checked.";
-    audioWarningTimer = setTimeout(() => {
-      if (!heardLocalAudio && callActive) {
-        hint.textContent = "No microphone sound detected. Check the selected input device and browser microphone permission.";
-      }
-    }, 6000);
+    hint.textContent = `Using ${inputDevice.selectedOptions[0]?.text || "system microphone"}. Speak naturally.`;
   });
   vapi.on("call-end", () => setCallState(false));
   vapi.on("speech-start", () => { status.textContent = "Ava is speaking"; });
@@ -99,17 +128,22 @@ async function initialize() {
     orb.style.setProperty("--mic-glow", `${20 + (Math.min(1, volume) * 28)}px`);
     if (volume > 0.01) {
       heardLocalAudio = true;
-      clearTimeout(audioWarningTimer);
       if (callActive) hint.textContent = "Microphone active. Speak naturally.";
     }
   });
   vapi.on("error", (error) => {
     console.error("Vapi call error", error);
-    const detail = error?.error?.message || error?.message || "Unknown voice call error";
-    hint.textContent = `Call error: ${detail}`;
-    setCallState(false);
+    if (isExpectedMeetingEnd(error)) return;
+    hint.textContent = `Call warning: ${errorText(error)}`;
   });
   vapi.on("message", (message) => {
+    if (message.type === "status-update" && message.status === "ended") {
+      setCallState(false);
+      if (message.endedReason === "silence-timed-out") {
+        hint.textContent = "Call ended after a period of inactivity. Start a new call when ready.";
+      }
+      return;
+    }
     if (message.type !== "tool-calls") return;
     const calls = message.toolCallList || [];
     const request = calls.find((item) => item.name === "showContactForm");
@@ -118,29 +152,44 @@ async function initialize() {
 }
 
 callButton.addEventListener("click", async () => {
-  if (!vapi) return;
+  if (!vapi || callStarting) return;
   if (callActive) {
     vapi.stop();
     return;
   }
+  callStarting = true;
   callButton.disabled = true;
   try {
     status.textContent = "Checking microphone";
     const microphone = await verifyMicrophone();
-    hint.textContent = `Microphone ready: ${microphone}`;
+    hint.textContent = `Microphone ready: ${microphone.label}`;
     const created = await api("/api/sessions", { method: "POST", body: "{}" });
     sessionId = created.session_id;
     status.textContent = "Connecting";
-    await vapi.start(assistantId, {
+    const call = await vapi.start(assistantId, {
       variableValues: { session_id: sessionId },
     });
+    if (!call) throw new Error("Vapi could not start the call.");
+    if (microphone.deviceId) {
+      try {
+        await vapi.setInputDevicesAsync({ audioSource: microphone.deviceId });
+      } catch (deviceError) {
+        console.warn("Could not force the selected microphone; using browser default", deviceError);
+        hint.textContent = `Call connected with browser default microphone. ${errorText(deviceError)}`;
+      }
+    }
   } catch (error) {
     console.error(error);
     hint.textContent = error.message;
     setCallState(false);
   } finally {
+    callStarting = false;
     callButton.disabled = false;
   }
+});
+
+navigator.mediaDevices?.addEventListener?.("devicechange", () => {
+  if (!callActive && !callStarting) refreshInputDevices().catch(console.error);
 });
 
 form.addEventListener("submit", async (event) => {
